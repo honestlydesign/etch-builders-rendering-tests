@@ -7,9 +7,10 @@
 
 declare( strict_types=1 );
 
-namespace HonestlyDesign\EtchBuildersWpTests;
+namespace HonestlyDesign\EtchBuildersWpTests\Integration;
 
 use HonestlyDesign\EtchBuilders\EtchBlocks\ElementBlock;
+use HonestlyDesign\EtchBuildersWpTests\WpStorage;
 use WP_UnitTestCase;
 
 /**
