@@ -4,3 +4,6 @@
 /.phpunit.result.cache
 /node_modules/
 /.wp-env/
+/.wp-env-sources/
+/.wp-env-sources/etch-builders-test-bootstrap/vendor/
+.DS_Store
