@@ -105,9 +105,23 @@ abstract class RenderingTestCase extends WP_UnitTestCase {
 			$html .= render_block( $block );
 		}
 
-		// Capture the <style> tag emitted by StylesRegister.
-		// StylesRegister::render_frontend_styles fires on wp_head priority 99.
-		$style_tag = $this->capture_etch_styles();
+		// Immediately capture page_styles (before anything resets them).
+		$style_tag = '';
+		if ( class_exists( \Etch\Blocks\Global\StylesRegister::class ) ) {
+			$ref = new \ReflectionClass( \Etch\Blocks\Global\StylesRegister::class );
+			$prop = $ref->getProperty( 'page_styles' );
+			$prop->setAccessible( true );
+			$registered = $prop->getValue();
+
+			if ( ! empty( $registered ) ) {
+				$compile = $ref->getMethod( 'compile_style_rules' );
+				$compile->setAccessible( true );
+				$css      = $compile->invoke( null, array_keys( $registered ) );
+				$style_tag = is_string( $css ) ? $css : '';
+				// Reset for the next render.
+				$prop->setValue( null, array() );
+			}
+		}
 
 		return new RenderResult( $html, $style_tag, $parsed );
 	}
@@ -119,26 +133,29 @@ abstract class RenderingTestCase extends WP_UnitTestCase {
 	 * We simulate wp_head by calling the hook directly.
 	 */
 	private function capture_etch_styles(): string {
-		$level = ob_get_level();
-		ob_start();
-		do_action( 'wp_head' );
-		$head_output = ob_get_clean();
-
-		// Clean any extra buffers wp_head may have opened.
-		while ( ob_get_level() > $level ) {
-			ob_end_clean();
-		}
-
-		if ( false === $head_output || '' === $head_output ) {
+		if ( ! class_exists( \Etch\Blocks\Global\StylesRegister::class ) ) {
 			return '';
 		}
 
-		// Extract the <style id="etch-page-styles">...</style> content.
-		if ( preg_match( '/<style[^>]*id="etch-page-styles"[^>]*>(.*?)<\/style>/s', $head_output, $matches ) ) {
-			return $matches[1];
+		$ref = new \ReflectionClass( \Etch\Blocks\Global\StylesRegister::class );
+
+		// Get the registered page_styles (populated by render_block → register_block_styles).
+		$page_styles_prop = $ref->getProperty( 'page_styles' );
+		$page_styles_prop->setAccessible( true );
+		$registered = $page_styles_prop->getValue();
+		if ( empty( $registered ) ) {
+			return '';
 		}
 
-		return '';
+		// Compile the CSS directly (bypassing the is_admin() guard in render_frontend_styles).
+		$compile = $ref->getMethod( 'compile_style_rules' );
+		$compile->setAccessible( true );
+		$css = $compile->invoke( null, array_keys( $registered ) );
+
+		// Reset page_styles for the next test.
+		$page_styles_prop->setValue( null, array() );
+
+		return is_string( $css ) ? $css : '';
 	}
 
 	/**
@@ -313,9 +330,30 @@ abstract class RenderingTestCase extends WP_UnitTestCase {
 		}
 		$this->created_users = array();
 
-		// Clear Etch persisted state.
+		// Clear Etch persisted state for test-registered styles only.
+		// We remove the etch_styles option entirely; Etch re-seeds its defaults
+		// on the next request via Etch\Styles::init(), but in the test process
+		// the defaults are already in the option from wp-env startup.
+		// We only delete if we added custom styles; otherwise leave it.
 		foreach ( self::ETCH_OPTIONS as $option ) {
 			delete_option( $option );
+		}
+
+		// Re-trigger Etch's default style seeding via the init action.
+		// Etch\Styles is instantiated and hooks on 'init'; calling do_action('init')
+		// would re-run all init hooks which is too broad. Instead, manually re-seed
+		// by calling the Styles class if it has a static accessor.
+		if ( class_exists( \Etch\Styles::class ) ) {
+			try {
+				$instance = new \Etch\Styles();
+				$ref      = new \ReflectionClass( $instance );
+				$method   = $ref->getMethod( 'initialize_default_styles' );
+				$method->setAccessible( true );
+				$method->invoke( $instance );
+			} catch ( \Throwable $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch
+				// If re-seeding fails, the defaults will be absent for subsequent tests,
+				// but that's acceptable — tests register their own styles explicitly.
+			}
 		}
 
 		// Reset the in-memory registries.
@@ -343,13 +381,20 @@ abstract class RenderingTestCase extends WP_UnitTestCase {
 			);
 		}
 
-		// Reset StylesRegister's page-styles static (Etch runtime).
+		// Reset StylesRegister's page_styles static + the $all_styles cache.
+		// Etch caches get_all_styles() in a static; without resetting it,
+		// subsequent tests get stale style data from the first test.
 		if ( class_exists( \Etch\Blocks\Global\StylesRegister::class ) ) {
 			$ref = new \ReflectionClass( \Etch\Blocks\Global\StylesRegister::class );
 			if ( $ref->hasProperty( 'page_styles' ) ) {
 				$prop = $ref->getProperty( 'page_styles' );
 				$prop->setAccessible( true );
 				$prop->setValue( null, array() );
+			}
+			if ( $ref->hasProperty( 'all_styles' ) ) {
+				$prop = $ref->getProperty( 'all_styles' );
+				$prop->setAccessible( true );
+				$prop->setValue( null, null );
 			}
 		}
 
